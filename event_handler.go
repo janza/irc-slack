@@ -105,6 +105,11 @@ func eventHandler(ctx *IrcContext, rtm *slack.RTM) {
 				text = joinText(text, file.URLPrivate, " ")
 			}
 
+			text := ev.Msg.Text
+			for _, attachment := range ev.Msg.Attachments {
+				text += attachment.Pretext + attachment.Fallback + attachment.ImageURL
+			}
+
 			log.Printf("SLACK msg from %v (%v) on %v: %v",
 				ev.Msg.User,
 				name,
