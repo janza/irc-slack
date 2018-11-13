@@ -95,9 +95,9 @@ func eventHandler(ctx *IrcContext, rtm *slack.RTM) {
 			for _, attachment := range ev.Msg.Attachments {
 				text = joinText(text, attachment.Pretext, "\n")
 				if attachment.Text != "" {
-					text = joinText(text, attachment.Pretext, "\n")
+					text = joinText(text, attachment.Text, "\n")
 				} else {
-					text = joinText(text, attachment.Pretext, "\n")
+					text = joinText(text, attachment.Fallback, "\n")
 				}
 				text = joinText(text, attachment.ImageURL, "\n")
 			}
