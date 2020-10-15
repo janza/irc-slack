@@ -225,7 +225,7 @@ func join(ctx *IrcContext, id, name, topic string) error {
 	log.Infof(info)
 	// the channels are already joined, notify the IRC client of their
 	// existence
-	go IrcSendChanInfoAfterJoin(ctx, name, id, topic, members, false)
+	IrcSendChanInfoAfterJoin(ctx, name, id, topic, members, false)
 	return nil
 }
 
@@ -809,7 +809,7 @@ func IrcJoinHandler(ctx *IrcContext, prefix, cmd string, args []string, trailing
 			continue
 		}
 		log.Infof("Joined channel %s", channame)
-		go IrcSendChanInfoAfterJoin(ctx, channame, ch.ID, ch.Purpose.Value, ch.Members, true)
+		IrcSendChanInfoAfterJoin(ctx, channame, ch.ID, ch.Purpose.Value, ch.Members, true)
 	}
 }
 

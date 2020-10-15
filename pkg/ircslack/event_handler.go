@@ -47,14 +47,7 @@ func resolveChannelName(ctx *IrcContext, msgChannel, threadTimestamp string) str
 			if !ok {
 				openingText, err := ctx.GetThreadOpener(msgChannel, threadTimestamp)
 				if err == nil {
-					IrcSendChanInfoAfterJoin(
-						ctx,
-						channame,
-						msgChannel,
-						openingText.Text,
-						[]string{},
-						true,
-					)
+					join(ctx, msgChannel, channame, strings.Split(openingText.Text, "\n")[0])
 				} else {
 					log.Warningf("Didn't find thread channel %v", err)
 				}
@@ -68,27 +61,14 @@ func resolveChannelName(ctx *IrcContext, msgChannel, threadTimestamp string) str
 					name = user.Name
 				}
 
-				privmsg := fmt.Sprintf(":%v!%v@%v PRIVMSG %v :%s%s%s\r\n",
-					name, openingText.User, ctx.ServerName,
-					channame, "", openingText.Text, "",
-				)
-				if _, err := ctx.Conn.Write([]byte(privmsg)); err != nil {
-					log.Warningf("Failed to send IRC message: %v", err)
-				}
+				writeMessage(ctx, name, openingText.User, channame, "", openingText.Text, "")
 			}
 			return channame
 		} else if channel.IsMpIM {
 			channame := formatMultipartyChannelName(msgChannel, channel.Name)
 			_, ok := ctx.Channels[channame]
 			if !ok {
-				IrcSendChanInfoAfterJoin(
-					ctx,
-					channame,
-					msgChannel,
-					channel.Purpose.Value,
-					[]string{},
-					true,
-				)
+				join(ctx, msgChannel, channame, channel.Purpose.Value)
 			}
 			return channame
 		}
@@ -171,18 +151,42 @@ func getConversationDetails(
 	channelID string,
 	timestamp string,
 ) (slack.Message, error) {
-	message, err := ctx.SlackClient.GetConversationHistory(&slack.GetConversationHistoryParameters{
+	response, err := ctx.SlackClient.GetConversationHistory(&slack.GetConversationHistoryParameters{
 		ChannelID: channelID,
 		Latest:    timestamp,
 		Limit:     1,
 		Inclusive: true,
 	})
+
 	if err != nil {
 		return slack.Message{}, err
 	}
-	if len(message.Messages) > 0 {
-		return message.Messages[0], nil
+
+	if len(response.Messages) > 0 {
+		msg := response.Messages[0]
+		if msg.Timestamp == timestamp {
+			return msg, nil
+		}
 	}
+
+	replies, _, _, err := ctx.SlackClient.GetConversationReplies(
+		&slack.GetConversationRepliesParameters{
+			ChannelID: channelID,
+			Latest:    timestamp,
+			Limit:     1,
+			Inclusive: true,
+			Timestamp: timestamp,
+		},
+	)
+
+	if err != nil {
+		return slack.Message{}, err
+	}
+
+	if len(replies) > 0 && replies[0].Timestamp == timestamp {
+		return replies[0], nil
+	}
+
 	return slack.Message{}, fmt.Errorf("No such message found")
 }
 
@@ -266,10 +270,21 @@ func printMessage(ctx *IrcContext, message slack.Msg, prefix string) {
 		linePrefix = "\x01ACTION "
 		lineSuffix = "\x01"
 	}
-	for _, line := range strings.Split(text, "\n") {
-		privmsg := fmt.Sprintf(":%v!%v@%v PRIVMSG %v :%s%s%s\r\n",
-			name, message.User, ctx.ServerName,
-			channame, linePrefix, line, lineSuffix,
+
+	if name == "" {
+		name = "unknown"
+	}
+	writeMessage(ctx, name, message.User, channame, linePrefix, text, lineSuffix)
+}
+
+func writeMessage(ctx *IrcContext, nick, user, channame, linePrefix, text, lineSuffix string) {
+	split_message := strings.Split(text, "\n")
+
+	for _, line := range split_message {
+		text := fmt.Sprintf("%s%s%s", linePrefix, line, lineSuffix)
+		privmsg := fmt.Sprintf(":%v!%v@%v PRIVMSG %v :%s\r\n",
+			nick, user, ctx.ServerName,
+			channame, text,
 		)
 		log.Debug(privmsg)
 		if _, err := ctx.Conn.Write([]byte(privmsg)); err != nil {
@@ -285,15 +300,15 @@ func eventHandler(ctx *IrcContext, rtm *slack.RTM) {
 		case *slack.MessageEvent:
 			// https://api.slack.com/events/message
 			message := ev.Msg
-			if message.SubType == "message_changed" {
-				editedMessage, err := getConversationDetails(ctx, message.Channel, message.Timestamp)
-				if err != nil {
-					fmt.Printf("could not get changed conversation details %s", err)
-					continue
-				}
-				log.Printf("edited msg chan %v", editedMessage.Msg.Channel)
-				editedMessage.Msg.Channel = message.Channel
-				printMessage(ctx, editedMessage.Msg, "(edited)")
+			if message.SubType == "message_replied" {
+				// ignore these events - threads are handled in resolveChannelName
+				continue
+			}
+
+			if message.SubType == "message_changed" && ev.PreviousMessage != nil {
+				newMsg := ev.SubMessage
+				newMsg.Channel = message.Channel
+				printMessage(ctx, *newMsg, "(edited) ")
 				continue
 			}
 			printMessage(ctx, message, "")
@@ -346,7 +361,6 @@ func eventHandler(ctx *IrcContext, rtm *slack.RTM) {
 			}
 		case *slack.ReactionAddedEvent:
 			// https://api.slack.com/events/reaction_added
-			channame := resolveChannelName(ctx, ev.Item.Channel, "")
 			user := ctx.GetUserInfo(ev.User)
 			name := ""
 			if user == nil {
@@ -360,6 +374,8 @@ func eventHandler(ctx *IrcContext, rtm *slack.RTM) {
 				fmt.Printf("could not get Conversation details %s", err)
 				continue
 			}
+
+			channame := resolveChannelName(ctx, ev.Item.Channel, msg.ThreadTimestamp)
 			msgText := msg.Text
 
 			msgText = ctx.ExpandUserIds(msgText)
